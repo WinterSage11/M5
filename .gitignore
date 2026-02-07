@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.env
+
+# Datos (No queremos subir datasets pesados a GitHub)
+data/
+*.csv
+*.xlsx
+
+# Cursor/VS Code
+.vscode/
+.cursor/
