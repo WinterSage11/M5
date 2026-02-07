@@ -1,7 +1,7 @@
 # Python
 __pycache__/
 *.py[cod]
-venv/
+lineup/
 .env
 
 # Datos (No queremos subir datasets pesados a GitHub)
