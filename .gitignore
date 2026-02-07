@@ -12,3 +12,8 @@ data/
 # Cursor/VS Code
 .vscode/
 .cursor/
+
+# macOS específicos
+.DS_Store
+.AppleDouble
+.LSOverride
