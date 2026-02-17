@@ -1,15 +1,22 @@
 # tooling.py
 import json
 
-# Cuando exista utils_fpl.py, descomenta estos imports:
-# from utils_fpl import (
-#     search_player,
-#     get_gw_context,
-#     get_player_card,
-#     compare_players,
-#     explain_metric,
-#     model_pick_players
-# )
+from utils_fpl import (
+    search_player,
+    get_gw_context,
+    get_player_card,
+    compare_players,
+    explain_metric,
+    model_pick_players,
+    pool_players_descriptive,
+    get_player_season_stats,
+    get_top_scorers,
+    get_top_players,
+    get_player_gw_points,
+)
+
+
+
 
 # ============================================================
 # Tools JSON Schemas
@@ -154,6 +161,102 @@ model_pick_players_json = {
     }
 }
 
+pool_players_descriptive_json = {
+    "name": "pool_players_descriptive",
+    "description": (
+        "Devuelve un pool de jugadores filtrado por posición y presupuesto máximo por jugador, "
+        "enriquecido con forma reciente (rolling window) y métricas defensivas (CS, GC, BPS, saves para GK). "
+        "No recomienda: solo entrega datos comparables."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "position": {"type": "string", "enum": ["GK", "DEF", "MID", "FWD"]},
+            "budget_million": {"type": "number", "description": "Presupuesto máximo por jugador (£m)."},
+            "gw": {"type": "integer", "description": "GW objetivo."},
+            "window": {"type": "integer", "description": "Ventana de forma (últimos N GWs)."},
+            "limit": {"type": "integer", "description": "Cantidad de jugadores a devolver (default 15)."},
+            "team": {"type": "string", "description": "Filtro opcional por equipo."},
+        },
+        "required": ["position", "budget_million", "gw"],
+        "additionalProperties": False
+    }
+}
+
+get_player_season_stats_json = {
+    "name": "get_player_season_stats",
+    "description": (
+        "Devuelve estadísticas acumuladas de temporada para un jugador (goles, asistencias, porterías en cero, "
+        "atajadas, bonus, BPS, xG/xA, etc.) usando bootstrap-static."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "player_id": {"type": "integer", "description": "ID del jugador (element id)."}
+        },
+        "required": ["player_id"],
+        "additionalProperties": False
+    }
+}
+
+get_top_scorers_json = {
+    "name": "get_top_scorers",
+    "description": "Ranking de goleadores por posición (ej. FWD) usando goles acumulados de temporada desde bootstrap-static.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "position": {"type": "string", "enum": ["GK", "DEF", "MID", "FWD"]},
+            "limit": {"type": "integer", "description": "Cuántos jugadores devolver (default 10)."}
+        },
+        "required": [],
+        "additionalProperties": False
+    }
+}
+
+get_top_players_json = {
+    "name": "get_top_players",
+    "description": (
+        "Ranking de jugadores por una métrica acumulada de temporada (bootstrap-static). "
+        "Ejemplos: goals_scored, assists, clean_sheets, saves. "
+        "Puedes filtrar por posición (GK/DEF/MID/FWD)."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "metric": {
+                "type": "string",
+                "enum": ["goals_scored", "assists", "clean_sheets", "saves"],
+                "description": "Métrica a rankear."
+            },
+            "position": {
+                "type": "string",
+                "enum": ["GK", "DEF", "MID", "FWD"],
+                "description": "Filtro opcional por posición."
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Cantidad de jugadores a devolver (default 10)."
+            }
+        },
+        "required": ["metric"],
+        "additionalProperties": False
+    }
+}
+
+get_player_gw_points_json = {
+    "name": "get_player_gw_points",
+    "description": "Devuelve los puntos (y stats básicos) de un jugador en un GW específico. Si no se indica GW, usa el último GW finalizado.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "player_id": {"type": "integer"},
+            "gw": {"type": "integer", "description": "Opcional. Si se omite, usa el GW anterior (último finished)."}
+        },
+        "required": ["player_id"],
+        "additionalProperties": False
+    }
+}
+
 # ============================================================
 # Tools list (OpenAI function calling format)
 # ============================================================
@@ -165,6 +268,11 @@ tools = [
     {"type": "function", "function": compare_players_json},
     {"type": "function", "function": explain_metric_json},
     {"type": "function", "function": model_pick_players_json},
+    {"type": "function", "function": pool_players_descriptive_json},
+    {"type": "function", "function": get_player_season_stats_json},
+    {"type": "function", "function": get_top_scorers_json},
+    {"type": "function", "function": get_top_players_json},
+    {"type": "function", "function": get_player_gw_points_json}
 ]
 
 # ============================================================
@@ -225,3 +333,4 @@ def handle_tool_calls(tool_calls):
         })
 
     return results
+

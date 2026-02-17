@@ -1,10 +1,17 @@
 # utils_fpl.py
 from __future__ import annotations
 
+import joblib
+import numpy as np
+import pandas as pd
 import json
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
+from pathlib import Path
+
+
+
 
 import requests
 
@@ -125,6 +132,13 @@ def _position_id_from_code(code: str) -> Optional[int]:
     mapping = {"GK": 1, "DEF": 2, "MID": 3, "FWD": 4}
     return mapping.get(code)
 
+def _safe_int(x, default=None):
+    try:
+        if x is None:
+            return default
+        return int(x)
+    except Exception:
+        return default
 
 # ============================================================
 # TOOL FUNCTIONS (deben matchear nombres en tooling.py)
@@ -147,8 +161,9 @@ def search_player(
         positions = _position_map(bootstrap)
 
         q = (query or "").strip().lower()
-        if not q:
-            return {"status": "error", "message": "query vacío"}
+        match_all = (q in {"*", "all", "any"})
+        if (not q) and (not match_all):
+            return {"status": "error", "message": "query vacío. Usa query='*' para listar por filtros."}
 
         pos_id = _position_id_from_code(position) if position else None
         lim = int(limit) if limit else 10
@@ -161,7 +176,7 @@ def search_player(
                 str(p.get("second_name", "")),
             ]).lower()
 
-            if q not in name_blob:
+            if (not match_all) and (q not in name_blob):
                 continue
 
             if pos_id and int(p.get("element_type")) != pos_id:
@@ -289,22 +304,46 @@ def get_player_card(
 
         # Fixtures del GW (element-summary fixtures)
         fixtures = summary.get("fixtures", [])
-        gw_fixtures = [f for f in fixtures if int(f.get("event", -1)) == int(gw)]
+        gw_fixtures = [f for f in fixtures if _safe_int(f.get("event"), default=-1) == int(gw)]
+
 
         # Forma básica placeholder: últimos N registros de history
         hist = summary.get("history", [])
-        hist_sorted = sorted(hist, key=lambda r: int(r.get("round", 0)))
+        hist_sorted = sorted(hist, key=lambda r: _safe_int(r.get("round"), default=0) or 0)
+
         last_n = hist_sorted[-int(window):] if hist_sorted else []
+
+                # Forma básica: últimos N registros de history
+        hist = summary.get("history", [])
+        hist_sorted = sorted(hist, key=lambda r: _safe_int(r.get("round"), default=0) or 0)
+        last_n = hist_sorted[-int(window):] if hist_sorted else []
+
+        points_last_n = sum(int(r.get("total_points", 0)) for r in last_n) if last_n else 0
+        minutes_last_n = sum(int(r.get("minutes", 0)) for r in last_n) if last_n else 0
+
+        xg_last_n = sum(float(r.get("expected_goals", 0) or 0) for r in last_n) if last_n else 0.0
+        xa_last_n = sum(float(r.get("expected_assists", 0) or 0) for r in last_n) if last_n else 0.0
+        xgi_last_n = xg_last_n + xa_last_n
+
+        clean_sheets_last_n = sum(int(r.get("clean_sheets", 0) or 0) for r in last_n) if last_n else 0
+        goals_conceded_last_n = sum(int(r.get("goals_conceded", 0) or 0) for r in last_n) if last_n else 0
+        bps_last_n = sum(int(r.get("bps", 0) or 0) for r in last_n) if last_n else 0
+        saves_last_n = sum(int(r.get("saves", 0) or 0) for r in last_n) if last_n else 0
 
         form = {
             "window": int(window),
             "matches": len(last_n),
-            "points_last_n": sum(int(r.get("total_points", 0)) for r in last_n) if last_n else 0,
-            "minutes_last_n": sum(int(r.get("minutes", 0)) for r in last_n) if last_n else 0,
-            # placeholders para xG/xA/xGI si vienen en history:
-            "xG_last_n": sum(float(r.get("expected_goals", 0) or 0) for r in last_n) if last_n else None,
-            "xA_last_n": sum(float(r.get("expected_assists", 0) or 0) for r in last_n) if last_n else None,
+            "points_last_n": points_last_n,
+            "minutes_last_n": minutes_last_n,
+            "xG_last_n": round(xg_last_n, 3),
+            "xA_last_n": round(xa_last_n, 3),
+            "xGI_last_n": round(xgi_last_n, 3),
+            "clean_sheets_last_n": clean_sheets_last_n,
+            "goals_conceded_last_n": goals_conceded_last_n,
+            "bps_last_n": bps_last_n,
+            "saves_last_n": saves_last_n,
         }
+
 
         return {
             "status": "ok",
@@ -408,22 +447,478 @@ def model_pick_players(
     position: Optional[str] = None,
     team: Optional[str] = None,
     budget_million: Optional[float] = None,
-    limit: Optional[int] = None
+    limit: int = 15,
+) -> Dict[str, Any]:
+
+    # 1) Cargar modelo
+    model, meta = load_ridge_model()
+    if model is None or meta is None:
+        return {
+            "status": "not_available",
+            "message": "El modelo aún no está implementado o no se encontró en ./artifacts/. Usa compare_players o pool_players_descriptive.",
+            "requested": {
+                "mode": mode, "gw": gw, "player_ids": player_ids,
+                "position": position, "team": team,
+                "budget_million": budget_million, "limit": limit
+            }
+        }
+
+    # 2) Compare mode
+    if mode == "compare":
+        if not player_ids:
+            return {"status": "error", "message": "mode=compare requiere player_ids"}
+        pred = predict_next_gw_points(player_ids=list(player_ids), gw=int(gw))
+        if pred.get("status") != "ok":
+            return pred
+        return {
+            "status": "ok",
+            "mode": "compare",
+            "gw": int(gw),
+            "predictions": pred["predictions"],
+            "errors": pred.get("errors", {})
+        }
+
+    # 3) Pool mode
+    if mode == "pool":
+        if not position:
+            return {"status": "error", "message": "mode=pool requiere position"}
+
+        # Pool descriptivo (misma lógica que ya usas)
+        pool = pool_players_descriptive(
+            position=position,
+            budget_million=float(budget_million) if budget_million is not None else 999.0,
+            gw=int(gw),
+            window=int(meta.get("window", 5)),
+            limit=int(limit),
+            team=team
+        )
+        if pool.get("status") != "ok":
+            return pool
+
+        pool_ids = [r["player_id"] for r in pool.get("table", [])]
+        pred = predict_next_gw_points(player_ids=pool_ids, gw=int(gw))
+        if pred.get("status") != "ok":
+            return pred
+
+        pred_map = {p["player_id"]: p["pred_total_points_next_gw"] for p in pred["predictions"]}
+
+        # Enriquecer tabla + ordenar por predicción desc
+        table = []
+        for r in pool["table"]:
+            pid = r["player_id"]
+            r2 = dict(r)
+            r2["pred_total_points_next_gw"] = pred_map.get(pid, None)
+            table.append(r2)
+
+        table.sort(key=lambda x: (x["pred_total_points_next_gw"] is not None, x["pred_total_points_next_gw"]), reverse=True)
+
+        return {
+            "status": "ok",
+            "mode": "pool",
+            "gw": int(gw),
+            "position": position,
+            "budget_million": budget_million,
+            "limit": int(limit),
+            "table": table,
+            "errors": pred.get("errors", {})
+        }
+
+    return {"status": "error", "message": f"mode inválido: {mode}"}
+
+
+def pool_players_descriptive(
+    position: str,
+    budget_million: float,
+    gw: int,
+    window: int = 5,
+    limit: int = 15,
+    team: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    Placeholder: aquí irá el modelo.
-    Por ahora devolvemos not_available de forma explícita (sin inventar).
+    Pool descriptivo enriquecido:
+    - Filtra por posición + presupuesto (y equipo opcional)
+    - Devuelve tabla con métricas estándar para decisión (sin recomendar).
     """
-    return {
-        "status": "not_available",
-        "message": "El modelo aún no está implementado. Usa compare_players para comparación descriptiva.",
-        "requested": {
-            "mode": mode,
-            "gw": gw,
-            "player_ids": player_ids,
+    try:
+        # 1) Buscar candidatos por filtros usando query="*"
+        base = search_player(
+            query="*",
+            position=position,
+            team=team,
+            budget_million=budget_million,
+            limit=limit
+        )
+        if base.get("status") != "ok":
+            return base
+
+        results = base.get("results", [])
+        if not results:
+            return {
+                "status": "ok",
+                "gw": int(gw),
+                "position": position,
+                "budget_million": float(budget_million),
+                "window": int(window),
+                "limit": int(limit),
+                "count": 0,
+                "table": [],
+                "cards": [],
+            }
+
+        # 2) Enriquecer con cards
+        cards = []
+        table = []
+
+        # mapa posición id
+        bootstrap = fetch_bootstrap_static()
+        pos_id = _position_id_from_code(position)
+        is_gk = (position == "GK")
+
+        for r in results:
+            pid = int(r["player_id"])
+            c = get_player_card(pid, gw, window=window, budget_million=budget_million)
+            cards.append(c)
+
+            if c.get("status") != "ok":
+                continue
+
+            p = c["player"]
+            f = c["form"]
+
+            row = {
+                "player_id": p["player_id"],
+                "name": p["web_name"],
+                "team": p["team"],
+                "pos": p["position"],
+                "price_m": p["now_cost_million"],
+                "status": p["status"],
+                "chance_next_round": p["chance_next_round"],
+                "out_of_budget": p["out_of_budget"],
+                "alerts_n": len(c.get("alerts", [])),
+                "points_last_n": f.get("points_last_n"),
+                "minutes_last_n": f.get("minutes_last_n"),
+                "xGI_last_n": f.get("xGI_last_n"),
+                "clean_sheets_last_n": f.get("clean_sheets_last_n"),
+                "goals_conceded_last_n": f.get("goals_conceded_last_n"),
+                "bps_last_n": f.get("bps_last_n"),
+            }
+
+            if is_gk:
+                row["saves_last_n"] = f.get("saves_last_n")
+
+            table.append(row)
+
+        return {
+            "status": "ok",
+            "gw": int(gw),
             "position": position,
-            "team": team,
-            "budget_million": budget_million,
-            "limit": limit,
+            "team_filter": team,
+            "budget_million": float(budget_million),
+            "window": int(window),
+            "limit": int(limit),
+            "count": len(table),
+            "table": table,
+            "cards": cards,  # por si quieres alertas detalladas
         }
+
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+def get_player_season_stats(player_id: int) -> Dict[str, Any]:
+    """
+    Stats acumuladas de temporada desde bootstrap elements:
+    útil para: goles, asistencias, porterías en cero, atajadas, etc.
+    """
+    try:
+        bootstrap = fetch_bootstrap_static()
+        teams = _team_map(bootstrap)
+        positions = _position_map(bootstrap)
+
+        player = next((p for p in _players(bootstrap) if int(p["id"]) == int(player_id)), None)
+        if not player:
+            return {"status": "error", "message": f"player_id {player_id} no encontrado en bootstrap"}
+
+        team_obj = teams.get(int(player.get("team")))
+        pos_obj = positions.get(int(player.get("element_type", 0)), {})
+
+        price_m = float(player.get("now_cost", 0)) / 10.0
+
+        # Campos clave (todos vienen de bootstrap elements)
+        payload = {
+            "status": "ok",
+            "player": {
+                "player_id": int(player_id),
+                "web_name": player.get("web_name"),
+                "team": _normalize_team_name(team_obj or {}),
+                "position": pos_obj.get("singular_name_short"),
+                "now_cost_million": price_m,
+                "status": player.get("status"),
+                "chance_next_round": player.get("chance_of_playing_next_round"),
+            },
+            "season_stats": {
+                "minutes": player.get("minutes"),
+                "total_points": player.get("total_points"),
+                "goals_scored": player.get("goals_scored"),
+                "assists": player.get("assists"),
+                "clean_sheets": player.get("clean_sheets"),
+                "goals_conceded": player.get("goals_conceded"),
+                "saves": player.get("saves"),
+                "penalties_saved": player.get("penalties_saved"),
+                "bonus": player.get("bonus"),
+                "bps": player.get("bps"),
+                "expected_goals": player.get("expected_goals"),
+                "expected_assists": player.get("expected_assists"),
+                "expected_goal_involvements": player.get("expected_goal_involvements"),
+                "expected_goals_conceded": player.get("expected_goals_conceded"),
+                "yellow_cards": player.get("yellow_cards"),
+                "red_cards": player.get("red_cards"),
+            }
+        }
+
+        return payload
+
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+def get_top_scorers(position: str = "FWD", limit: int = 10) -> dict:
+    try:
+        bootstrap = fetch_bootstrap_static()
+        teams = _team_map(bootstrap)
+        positions = _position_map(bootstrap)
+
+        pos_id = _position_id_from_code(position)
+        if pos_id is None:
+            return {"status": "error", "message": "position inválida"}
+
+        rows = []
+        for p in _players(bootstrap):
+            if int(p.get("element_type", 0)) != pos_id:
+                continue
+
+            team_obj = teams.get(int(p.get("team")))
+            price_m = float(p.get("now_cost", 0)) / 10.0
+
+            rows.append({
+                "player_id": int(p["id"]),
+                "name": p.get("web_name"),
+                "team": _normalize_team_name(team_obj or {}),
+                "price_m": price_m,
+                "goals_scored": int(p.get("goals_scored", 0) or 0),
+                "minutes": int(p.get("minutes", 0) or 0),
+                "total_points": int(p.get("total_points", 0) or 0),
+            })
+
+        rows.sort(key=lambda r: (r["goals_scored"], r["minutes"]), reverse=True)
+        rows = rows[: int(limit)]
+
+        return {
+            "status": "ok",
+            "position": position,
+            "limit": int(limit),
+            "results": rows
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+def get_top_players(metric: str, position: Optional[str] = None, limit: int = 10) -> Dict[str, Any]:
+    """
+    Ranking genérico por métrica acumulada de temporada (bootstrap elements).
+    Ejemplos:
+      - metric="goals_scored", position="FWD"
+      - metric="assists", position=None
+      - metric="clean_sheets", position="DEF"
+      - metric="saves", position="GK"
+    """
+    try:
+        allowed_metrics = {"goals_scored", "assists", "clean_sheets", "saves"}
+        metric_norm = (metric or "").strip()
+
+        if metric_norm not in allowed_metrics:
+            return {
+                "status": "error",
+                "message": f"metric inválida '{metric}'. Allowed: {sorted(list(allowed_metrics))}"
+            }
+
+        bootstrap = fetch_bootstrap_static()
+        teams = _team_map(bootstrap)
+        positions = _position_map(bootstrap)
+
+        pos_id = _position_id_from_code(position) if position else None
+        lim = max(1, int(limit))
+
+        rows = []
+        for p in _players(bootstrap):
+            if pos_id and int(p.get("element_type", 0)) != pos_id:
+                continue
+
+            team_obj = teams.get(int(p.get("team")))
+            price_m = float(p.get("now_cost", 0) or 0) / 10.0
+            metric_value = int(p.get(metric_norm, 0) or 0)
+
+            rows.append({
+                "player_id": int(p["id"]),
+                "name": p.get("web_name"),
+                "team": _normalize_team_name(team_obj or {}),
+                "pos": positions.get(int(p.get("element_type", 0)), {}).get("singular_name_short"),
+                "price_m": price_m,
+                metric_norm: metric_value,
+                "minutes": int(p.get("minutes", 0) or 0),
+                "total_points": int(p.get("total_points", 0) or 0),
+                "status": p.get("status"),
+                "chance_next_round": p.get("chance_of_playing_next_round"),
+            })
+
+        # Orden: primero métrica desc, luego minutes desc (tie-break), luego total_points desc
+        rows.sort(key=lambda r: (r.get(metric_norm, 0), r.get("minutes", 0), r.get("total_points", 0)), reverse=True)
+        rows = rows[:lim]
+
+        return {
+            "status": "ok",
+            "metric": metric_norm,
+            "position_filter": position,
+            "limit": lim,
+            "results": rows
+        }
+
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+# (Opcional) wrapper para compatibilidad si ya estabas usando get_top_scorers
+def get_top_scorers(position: str = "FWD", limit: int = 10) -> Dict[str, Any]:
+    return get_top_players(metric="goals_scored", position=position, limit=limit)
+
+
+##########
+ARTIFACTS_DIR = Path(__file__).resolve().parent / "artifacts"
+MODEL_PATH = ARTIFACTS_DIR / "ridge_total_points_next_gw.joblib"
+META_PATH = ARTIFACTS_DIR / "ridge_total_points_next_gw_meta.json"
+
+_MODEL = None
+_MODEL_META = None
+
+def load_ridge_model():
+    """Carga el modelo y meta 1 sola vez (cache en memoria)."""
+    global _MODEL, _MODEL_META
+    if _MODEL is not None and _MODEL_META is not None:
+        return _MODEL, _MODEL_META
+
+    if not MODEL_PATH.exists() or not META_PATH.exists():
+        return None, None
+
+    _MODEL = joblib.load(MODEL_PATH)
+    _MODEL_META = json.loads(META_PATH.read_text(encoding="utf-8"))
+    return _MODEL, _MODEL_META
+
+#####
+def _build_feature_row_from_card(card: dict, feature_cols: list, window: int) -> dict:
+    """
+    Convierte get_player_card(...) -> una fila con las columnas esperadas por el modelo.
+    Importante: el notebook usó *rolling sums* con nombres tipo:
+      total_points_roll_5, minutes_roll_5, expected_goals_roll_5, expected_assists_roll_5, ...
+    Aquí reconstruimos esos nombres desde card["form"].
+    """
+    p = card["player"]
+    f = card["form"]
+
+    # mapeo: nuestras métricas -> nombres del dataset (roll_5)
+    # card["form"] trae xG_last_n/xA_last_n/xGI_last_n, etc.
+    base = {
+        "now_cost_m": float(p.get("now_cost_million", 0.0) or 0.0),
+        f"total_points_roll_{window}": float(f.get("points_last_n", 0) or 0),
+        f"minutes_roll_{window}": float(f.get("minutes_last_n", 0) or 0),
+        f"expected_goals_roll_{window}": float(f.get("xG_last_n", 0.0) or 0.0),
+        f"expected_assists_roll_{window}": float(f.get("xA_last_n", 0.0) or 0.0),
+        f"xGI_roll_{window}": float(f.get("xGI_last_n", 0.0) or 0.0),
+        f"clean_sheets_roll_{window}": float(f.get("clean_sheets_last_n", 0) or 0),
+        f"goals_conceded_roll_{window}": float(f.get("goals_conceded_last_n", 0) or 0),
+        f"bps_roll_{window}": float(f.get("bps_last_n", 0) or 0),
+        f"saves_roll_{window}": float(f.get("saves_last_n", 0) or 0),
     }
+
+    # Si tu notebook incluyó means, los llenamos con aproximación simple:
+    # mean ≈ sum / matches (si matches>0)
+    matches = int(f.get("matches", 0) or 0)
+    denom = max(matches, 1)
+    base[f"total_points_mean_{window}"] = base[f"total_points_roll_{window}"] / denom
+    base[f"minutes_mean_{window}"] = base[f"minutes_roll_{window}"] / denom
+    base[f"bps_mean_{window}"] = base[f"bps_roll_{window}"] / denom
+
+    # devolver solo columnas que el modelo espera (y el resto a 0)
+    row = {c: 0.0 for c in feature_cols}
+    for k, v in base.items():
+        if k in row:
+            row[k] = float(v)
+    return row
+
+
+def predict_next_gw_points(player_ids: list, gw: int) -> dict:
+    model, meta = load_ridge_model()
+    if model is None or meta is None:
+        return {"status": "not_available", "message": "Modelo no encontrado en ./artifacts/"}
+
+    window = int(meta.get("window", 5))
+    feature_cols = meta["feature_cols"]
+
+    rows = []
+    ok_ids = []
+    errors = {}
+
+    for pid in player_ids:
+        card = get_player_card(int(pid), int(gw), window=window, budget_million=None)
+        if card.get("status") != "ok":
+            errors[int(pid)] = card.get("message", "card error")
+            continue
+        ok_ids.append(int(pid))
+        rows.append(_build_feature_row_from_card(card, feature_cols, window))
+
+    if not rows:
+        return {"status": "error", "message": "No se pudieron construir features para ningún player_id", "errors": errors}
+
+    X = pd.DataFrame(rows, columns=feature_cols).fillna(0)
+    preds = model.predict(X)
+
+    return {
+        "status": "ok",
+        "gw": int(gw),
+        "window": window,
+        "predictions": [
+            {"player_id": pid, "pred_total_points_next_gw": float(pred)}
+            for pid, pred in zip(ok_ids, preds)
+        ],
+        "errors": errors,
+    }
+
+def get_player_gw_points(player_id: int, gw: Optional[int] = None) -> Dict[str, Any]:
+    try:
+        bootstrap = fetch_bootstrap_static()
+        events = bootstrap.get("events", [])
+        finished_gws = [e["id"] for e in events if e.get("finished") is True]
+        last_finished = max(finished_gws) if finished_gws else None
+
+        target_gw = int(gw) if gw else last_finished
+        if not target_gw:
+            return {"status": "error", "message": "No se pudo determinar GW anterior (último GW finished)."}
+
+        summary = fetch_element_summary(int(player_id))
+        hist = summary.get("history", [])
+
+        row = next((r for r in hist if int(r.get("round", 0)) == target_gw), None)
+        if not row:
+            return {"status": "error", "message": f"No hay registro para GW{target_gw} en history."}
+
+        return {
+            "status": "ok",
+            "player_id": int(player_id),
+            "gw": int(target_gw),
+            "total_points": int(row.get("total_points", 0) or 0),
+            "minutes": int(row.get("minutes", 0) or 0),
+            "goals_scored": int(row.get("goals_scored", 0) or 0),
+            "assists": int(row.get("assists", 0) or 0),
+            "clean_sheets": int(row.get("clean_sheets", 0) or 0),
+            "goals_conceded": int(row.get("goals_conceded", 0) or 0),
+            "saves": int(row.get("saves", 0) or 0),
+            "bps": int(row.get("bps", 0) or 0),
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}

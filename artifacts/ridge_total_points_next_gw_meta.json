@@ -1,0 +1,26 @@
+{
+  "model_type": "Ridge",
+  "alpha": 1.0,
+  "window": 5,
+  "feature_cols": [
+    "total_points_roll_5",
+    "minutes_roll_5",
+    "goals_scored_roll_5",
+    "assists_roll_5",
+    "clean_sheets_roll_5",
+    "goals_conceded_roll_5",
+    "saves_roll_5",
+    "bps_roll_5",
+    "expected_goals_roll_5",
+    "expected_assists_roll_5",
+    "xGI_roll_5",
+    "total_points_mean_5",
+    "minutes_mean_5",
+    "bps_mean_5",
+    "now_cost_m"
+  ],
+  "target": "target_total_points_next_gw",
+  "n_rows": 14785,
+  "gw_min": 1,
+  "gw_max": 26
+}

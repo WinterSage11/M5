@@ -1,0 +1,38 @@
+{
+  "model_type": "HistGradientBoostingRegressor",
+  "params": {
+    "max_depth": 3,
+    "learning_rate": 0.05,
+    "random_state": 42
+  },
+  "window": 5,
+  "feature_cols": [
+    "total_points_roll_5",
+    "minutes_roll_5",
+    "goals_scored_roll_5",
+    "assists_roll_5",
+    "clean_sheets_roll_5",
+    "goals_conceded_roll_5",
+    "saves_roll_5",
+    "bps_roll_5",
+    "expected_goals_roll_5",
+    "expected_assists_roll_5",
+    "xGI_roll_5",
+    "now_cost_m",
+    "chance_of_playing_next_round"
+  ],
+  "target": "y_points_next_gw",
+  "n_rows": 14785,
+  "players": 643,
+  "gw_min": 1,
+  "gw_max": 26,
+  "cv": {
+    "type": "walk_forward",
+    "val_block": 3,
+    "min_train_gw": 10
+  },
+  "metrics_cv_mean": {
+    "mae": 1.478,
+    "rmse": 2.3216
+  }
+}
