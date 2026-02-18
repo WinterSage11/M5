@@ -1,5 +1,6 @@
 # tooling.py
 import json
+import traceback
 
 from utils_fpl import (
     search_player,
@@ -281,18 +282,34 @@ tools = [
 
 DEFAULT_POOL_LIMIT = 10
 
-def _apply_defaults(tool_name: str, arguments: dict) -> dict:
-    """
-    Inserta defaults sin obligar al usuario a especificarlos.
-    Importante: NO inventa parámetros críticos como budget_million si no vienen.
-    """
+
+def _apply_defaults(tool_name: str, args: dict) -> dict:
+    args = dict(args or {})
+
     if tool_name == "model_pick_players":
-        mode = arguments.get("mode")
-        if mode == "pool":
-            # Default limit si no viene
-            if arguments.get("limit") is None:
-                arguments["limit"] = DEFAULT_POOL_LIMIT
-    return arguments
+        # defaults existentes
+        if "limit" not in args or args["limit"] in (None, "", 0):
+            args["limit"] = 15
+
+        # normaliza mode
+        mode = (args.get("mode") or "").strip().lower()
+
+        # sinónimos comunes -> pool
+        pool_aliases = {"pool", "rank", "ranking", "top", "list", "best", "recommend", "recomendar"}
+        compare_aliases = {"compare", "vs", "versus", "duel"}
+
+        if mode in pool_aliases:
+            args["mode"] = "pool"
+        elif mode in compare_aliases:
+            args["mode"] = "compare"
+        else:
+            # si viene vacío o raro, inferimos según inputs
+            if args.get("player_ids"):
+                args["mode"] = "compare"
+            else:
+                args["mode"] = "pool"
+
+    return args
 
 
 def handle_tool_calls(tool_calls):
@@ -307,6 +324,8 @@ def handle_tool_calls(tool_calls):
         tool_name = tool_call.function.name
         arguments = json.loads(tool_call.function.arguments or "{}")
         arguments = _apply_defaults(tool_name, arguments)
+        print("Args:", tool_name, arguments, flush=True)
+
 
         print(f"Tool called: {tool_name}", flush=True)
 
@@ -323,8 +342,17 @@ def handle_tool_calls(tool_calls):
         else:
             try:
                 result = tool_fn(**arguments)
+   #         except Exception as e:
+    #            result = {"status": "error", "tool": tool_name, "message": str(e)}
             except Exception as e:
-                result = {"status": "error", "tool": tool_name, "message": str(e)}
+                result = {
+                    "status": "error",
+                    "tool": tool_name,
+                    "error_type": type(e).__name__,
+                    "error_msg": str(e),
+                    "traceback": traceback.format_exc(),
+                }
+
 
         results.append({
             "role": "tool",

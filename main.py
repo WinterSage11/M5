@@ -4,10 +4,9 @@ from io import BytesIO
 from openai import OpenAI
 from dotenv import load_dotenv
 
-# Prompt del proyecto (lo adaptaremos luego con base en tu prompts.py)
 from prompts import stronger_prompt
 
-# Tools + dispatcher (nuestro tooling.py)
+# Tools + dispatcher
 from tooling import handle_tool_calls, tools
 
 load_dotenv(override=True)
@@ -22,9 +21,6 @@ model_tts = "gpt-4o-mini-tts"
 
 
 def stream_assistant_answer(client, model, conversation):
-    """
-    Igual que tu implementación: hace una segunda llamada con stream=True para pintar progresivamente.
-    """
     full_response = ""
     placeholder = st.empty()
 
@@ -47,8 +43,197 @@ def stream_assistant_answer(client, model, conversation):
 # UI
 # ============================================================
 
-st.title("⚽ LineupAI (FantasyPL)")
-st.caption("Comparativa de jugadores para una jornada (GW) usando datos oficiales de FPL.")
+# ==========================
+# Page config + Theme CSS
+# ==========================
+st.set_page_config(
+    page_title="LineupAI (FantasyPL)",
+    page_icon="⚽",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+st.markdown(
+    """
+    <style>
+      /* Fondo general */
+      .stApp {
+        background: linear-gradient(135deg, #061833 0%, #0A2A5E 45%, #0B4AA1 100%);
+      }
+
+      /* Quitar fondo del header (barra superior) */
+      [data-testid="stHeader"] {
+        background: rgba(0,0,0,0);
+      }
+
+      /* Sidebar estilo glass */
+      [data-testid="stSidebar"] {
+        background: rgba(255,255,255,0.06);
+        border-right: 1px solid rgba(255,255,255,0.10);
+        backdrop-filter: blur(10px);
+      }
+
+      /* Contenedor principal */
+      .block-container {
+        padding-top: 2rem;
+        padding-bottom: 2rem;
+      }
+
+      /* Tarjetas para los mensajes del chat */
+      [data-testid="stChatMessage"] {
+        background: rgba(255,255,255,0.08);
+        border: 1px solid rgba(255,255,255,0.12);
+        border-radius: 18px;
+        padding: 12px 14px;
+        margin-bottom: 10px;
+        box-shadow: 0 6px 18px rgba(0,0,0,0.18);
+      }
+
+      /* Tipografía legible en fondos oscuros */
+      html, body, [class*="css"]  {
+        color: rgba(255,255,255,0.92);
+      }
+      .stMarkdown, .stCaption, .stText, p, li {
+        color: rgba(255,255,255,0.88) !important;
+      }
+
+      /* Botón principal con acento */
+      button[kind="primary"] {
+        background: #00D4FF !important;
+        color: #001018 !important;
+        border-radius: 14px !important;
+        border: 0 !important;
+        font-weight: 650 !important;
+      }
+
+      /* Inputs generales */
+      [data-testid="stTextInput"] input,
+      [data-testid="stNumberInput"] input {
+        background: rgba(255,255,255,0.06) !important;
+        border: 1px solid rgba(255,255,255,0.14) !important;
+        border-radius: 12px !important;
+        color: rgba(255,255,255,0.92) !important;
+      }
+
+      /* --- CHAT INPUT (donde escribe el usuario) EN AZUL --- */
+      [data-testid="stChatInput"] textarea {
+        background: rgba(0, 180, 255, 0.12) !important;   /* azul translúcido */
+        border: 1px solid rgba(0, 212, 255, 0.35) !important;
+        color: rgba(255,255,255,0.95) !important;
+        border-radius: 14px !important;
+        caret-color: #00D4FF !important;
+      }
+
+      /* A veces el negro viene del contenedor */
+      [data-testid="stChatInput"] > div {
+        background: transparent !important;
+      }
+
+      /* Placeholder */
+      [data-testid="stChatInput"] textarea::placeholder {
+        color: rgba(255,255,255,0.65) !important;
+      }
+
+      /* Plan B más agresivo (por si la versión de Streamlit insiste) */
+      div[data-testid="stChatInput"] textarea,
+      div[data-testid="stChatInput"] textarea:focus,
+      div[data-testid="stChatInput"] textarea:active {
+        background-color: rgba(0, 180, 255, 0.12) !important;
+      }
+
+      /* Separadores más sutiles */
+      hr {
+        border-top: 1px solid rgba(255,255,255,0.10);
+      }
+
+      /* ================================
+   FIX: “frame” negro inferior
+   (contenedor fijo del chat input)
+   PON ESTO AL FINAL DEL <style>
+   ================================ */
+
+    /* El contenedor grande de la app (a veces el negro viene de aquí) */
+    [data-testid="stAppViewContainer"] {
+    background: linear-gradient(135deg, #061833 0%, #0A2A5E 45%, #0B4AA1 100%) !important;
+    }
+
+    /* En algunas versiones, el "suelo" del main es el que queda negro */
+    [data-testid="stMain"] {
+    background: transparent !important;
+    }
+
+    /* Contenedor inferior (MUY común en versiones recientes) */
+    [data-testid="stBottomBlockContainer"] {
+    background: rgba(6, 24, 51, 0.85) !important;          /* azul oscuro */
+    border-top: 1px solid rgba(255,255,255,0.10) !important;
+    backdrop-filter: blur(10px);
+    }
+
+    /* Variante alternativa del contenedor inferior */
+    [data-testid="stBottom"] {
+    background: rgba(6, 24, 51, 0.85) !important;
+    border-top: 1px solid rgba(255,255,255,0.10) !important;
+    backdrop-filter: blur(10px);
+    }
+
+    /* Si el negro es un wrapper/section alrededor */
+    section[data-testid="stBottomBlockContainer"],
+    section[data-testid="stBottom"] {
+    background: rgba(6, 24, 51, 0.85) !important;
+    }
+
+    /* Asegurar que el chat input “card” se vea azul y no herede negro */
+    [data-testid="stChatInput"] {
+    background: rgba(255,255,255,0.06) !important;
+    border: 1px solid rgba(255,255,255,0.10) !important;
+    border-radius: 18px !important;
+    padding: 12px 12px !important;
+    box-shadow: 0 10px 24px rgba(0,0,0,0.18) !important;
+    }
+
+    /* Input azul */
+    [data-testid="stChatInput"] textarea {
+    background: rgba(0, 180, 255, 0.14) !important;
+    border: 1px solid rgba(0, 212, 255, 0.35) !important;
+    color: rgba(255,255,255,0.95) !important;
+    border-radius: 14px !important;
+    caret-color: #00D4FF !important;
+    }
+
+    /* Contenedor interno del input (evita “placa” negra) */
+    [data-testid="stChatInput"] > div {
+    background: transparent !important;
+    }
+
+
+ 
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# ==========================
+# Header "producto" (Opción 2)
+# ==========================
+st.markdown(
+    """
+    <div style="
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 22px;
+      padding: 18px 18px;
+      box-shadow: 0 10px 24px rgba(0,0,0,0.18);
+      margin-bottom: 12px;
+    ">
+      <div style="font-size: 28px; font-weight: 800;">⚽ LineupAI <span style="opacity:0.8;">(FantasyPL)</span></div>
+      <div style="margin-top:6px; font-size: 14px; opacity: 0.9;">
+        Comparativa de jugadores para una jornada (GW) usando datos oficiales de FPL.
+      </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
 
 if "messages" not in st.session_state:
     st.session_state["messages"] = [

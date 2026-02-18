@@ -1,11 +1,11 @@
 # utils_fpl.py
 from __future__ import annotations
-
 import joblib
 import numpy as np
 import pandas as pd
 import json
 import time
+import unicodedata
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
@@ -144,6 +144,13 @@ def _safe_int(x, default=None):
 # TOOL FUNCTIONS (deben matchear nombres en tooling.py)
 # ============================================================
 
+
+
+def _strip_accents(s: str) -> str:
+    s = (s or "").strip().lower()
+    s = unicodedata.normalize("NFKD", s)
+    return "".join(ch for ch in s if not unicodedata.combining(ch))
+
 def search_player(
     query: str,
     position: Optional[str] = None,
@@ -153,20 +160,21 @@ def search_player(
 ) -> Dict[str, Any]:
     """
     Busca jugadores por nombre (web_name / first_name / second_name).
-    Devuelve candidatos con player_id para que otras tools trabajen.
+    Soporta acentos (Sánchez == Sanchez).
     """
     try:
         bootstrap = fetch_bootstrap_static()
         teams = _team_map(bootstrap)
         positions = _position_map(bootstrap)
 
-        q = (query or "").strip().lower()
+        q_raw = (query or "").strip()
+        q = _strip_accents(q_raw)
         match_all = (q in {"*", "all", "any"})
         if (not q) and (not match_all):
             return {"status": "error", "message": "query vacío. Usa query='*' para listar por filtros."}
 
         pos_id = _position_id_from_code(position) if position else None
-        lim = int(limit) if limit else 10
+        lim = int(limit) if limit is not None else 15
 
         candidates = []
         for p in _players(bootstrap):
@@ -174,9 +182,10 @@ def search_player(
                 str(p.get("web_name", "")),
                 str(p.get("first_name", "")),
                 str(p.get("second_name", "")),
-            ]).lower()
+            ])
+            name_blob_n = _strip_accents(name_blob)
 
-            if (not match_all) and (q not in name_blob):
+            if (not match_all) and (q not in name_blob_n):
                 continue
 
             if pos_id and int(p.get("element_type")) != pos_id:
@@ -186,7 +195,6 @@ def search_player(
             if team and team_obj and (not _matches_team_filter(team_obj, team)):
                 continue
 
-            # now_cost viene en décimas (ej 75 => £7.5m)
             price_m = float(p.get("now_cost", 0)) / 10.0
             if budget_million is not None and price_m > float(budget_million):
                 continue
@@ -203,7 +211,6 @@ def search_player(
                 "total_points": p.get("total_points"),
             })
 
-        # Orden simple: más puntos totales y luego más seleccionado
         def _safe_float(x):
             try:
                 return float(x)
@@ -440,8 +447,10 @@ def explain_metric(metric: str) -> Dict[str, Any]:
     return {"status": "ok", "metric": metric, "explanation": text}
 
 
+
+
 def model_pick_players(
-    mode: str,
+    mode: Optional[str],
     gw: int,
     player_ids: Optional[List[int]] = None,
     position: Optional[str] = None,
@@ -450,68 +459,69 @@ def model_pick_players(
     limit: int = 15,
 ) -> Dict[str, Any]:
 
-    # 1) Cargar modelo
-    model, meta = load_ridge_model()
+    # 0) Normalizar mode (blindaje)
+    mode_raw = (mode or "").strip().lower()
+    pool_aliases = {"pool", "rank", "ranking", "top", "list", "best", "recommend", "recomendar"}
+    compare_aliases = {"compare", "vs", "versus", "duel"}
+
+    if mode_raw in pool_aliases:
+        mode_n = "pool"
+    elif mode_raw in compare_aliases:
+        mode_n = "compare"
+    else:
+        # fallback por señales
+        mode_n = "compare" if player_ids else "pool"
+
+    # 1) Cargar modelo (HGB)
+    model, meta = load_ridge_model()   # <- CAMBIO IMPORTANTE
     if model is None or meta is None:
         return {
             "status": "not_available",
-            "message": "El modelo aún no está implementado o no se encontró en ./artifacts/. Usa compare_players o pool_players_descriptive.",
+            "message": "No se encontró el modelo en ./artifacts/. Genera artifacts con el notebook y vuelve a intentar.",
             "requested": {
-                "mode": mode, "gw": gw, "player_ids": player_ids,
+                "mode": mode_n, "gw": int(gw), "player_ids": player_ids,
                 "position": position, "team": team,
-                "budget_million": budget_million, "limit": limit
+                "budget_million": budget_million, "limit": int(limit)
             }
         }
 
     # 2) Compare mode
-    if mode == "compare":
+    if mode_n == "compare":
         if not player_ids:
             return {"status": "error", "message": "mode=compare requiere player_ids"}
+
         pred = predict_next_gw_points(player_ids=list(player_ids), gw=int(gw))
         if pred.get("status") != "ok":
             return pred
+
         return {
             "status": "ok",
             "mode": "compare",
             "gw": int(gw),
-            "predictions": pred["predictions"],
+            "predictions": pred.get("predictions", []),
             "errors": pred.get("errors", {})
         }
 
     # 3) Pool mode
-    if mode == "pool":
-        if not position:
-            return {"status": "error", "message": "mode=pool requiere position"}
+    # (si no es compare, tratamos como pool)
+    if not position:
+        return {"status": "error", "message": "mode=pool requiere position"}
 
-        # Pool descriptivo (misma lógica que ya usas)
-        pool = pool_players_descriptive(
-            position=position,
-            budget_million=float(budget_million) if budget_million is not None else 999.0,
-            gw=int(gw),
-            window=int(meta.get("window", 5)),
-            limit=int(limit),
-            team=team
-        )
-        if pool.get("status") != "ok":
-            return pool
+    pool = pool_players_descriptive(
+        position=position,
+        budget_million=float(budget_million) if budget_million is not None else 999.0,
+        gw=int(gw),
+        window=int(meta.get("window", 5)),
+        limit=int(limit),
+        team=team
+    )
+    if pool.get("status") != "ok":
+        return pool
 
-        pool_ids = [r["player_id"] for r in pool.get("table", [])]
-        pred = predict_next_gw_points(player_ids=pool_ids, gw=int(gw))
-        if pred.get("status") != "ok":
-            return pred
+    pool_rows = pool.get("table", []) or []
+    pool_ids = [r.get("player_id") for r in pool_rows if r.get("player_id") is not None]
 
-        pred_map = {p["player_id"]: p["pred_total_points_next_gw"] for p in pred["predictions"]}
-
-        # Enriquecer tabla + ordenar por predicción desc
-        table = []
-        for r in pool["table"]:
-            pid = r["player_id"]
-            r2 = dict(r)
-            r2["pred_total_points_next_gw"] = pred_map.get(pid, None)
-            table.append(r2)
-
-        table.sort(key=lambda x: (x["pred_total_points_next_gw"] is not None, x["pred_total_points_next_gw"]), reverse=True)
-
+    if not pool_ids:
         return {
             "status": "ok",
             "mode": "pool",
@@ -519,11 +529,40 @@ def model_pick_players(
             "position": position,
             "budget_million": budget_million,
             "limit": int(limit),
-            "table": table,
-            "errors": pred.get("errors", {})
+            "table": [],
+            "errors": {}
         }
 
-    return {"status": "error", "message": f"mode inválido: {mode}"}
+    pred = predict_next_gw_points(player_ids=pool_ids, gw=int(gw))
+    if pred.get("status") != "ok":
+        return pred
+
+    pred_map = {p["player_id"]: p.get("pred_total_points_next_gw") for p in pred.get("predictions", [])}
+
+    # Enriquecer tabla + ordenar
+    table = []
+    for r in pool_rows:
+        pid = r.get("player_id")
+        r2 = dict(r)
+        r2["pred_total_points_next_gw"] = pred_map.get(pid)
+        table.append(r2)
+
+    table.sort(
+        key=lambda x: (x.get("pred_total_points_next_gw") is not None, x.get("pred_total_points_next_gw", -1e9)),
+        reverse=True
+    )
+
+    return {
+        "status": "ok",
+        "mode": "pool",
+        "gw": int(gw),
+        "position": position,
+        "budget_million": budget_million,
+        "limit": int(limit),
+        "table": table,
+        "errors": pred.get("errors", {})
+    }
+
 
 
 def pool_players_descriptive(
