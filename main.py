@@ -240,13 +240,22 @@ if "messages" not in st.session_state:
         {
             "role": "assistant",
             "content": (
-                "¿Qué quieres comparar? Ejemplos:\n"
-                "- 'Compara a Haaland vs Watkins para el próximo GW'\n"
-                "- 'Tengo hasta 5.0m, ¿qué delanteros me convienen para el próximo GW?'\n"
-                "- 'Explica xGI en lenguaje sencillo'"
+                "👋 **LineupAI (FantasyPL)** — comparo jugadores y busco opciones para el próximo GW con datos oficiales de FPL.\n\n"
+                "🧭 **Cómo usar la app**\n"
+                "- **Presupuesto (izquierda):** pon tu máximo por jugador (£m). Si lo dejas en **0.0**, es **sin límite**.\n\n"
+                "✅ **Prueba con:**\n"
+                "- \"Compara Haaland vs Watkins para el próximo GW\"\n"
+                "- \"Tengo hasta 5.0m, ¿qué delanteros puedo escoger para el próximo GW?\"\n"
+                "- \"Mejores porteros ≤ 5.0m\" / \"Top goleadores\" / \"Top asistidores\"\n"
+                "- \"Explica xGI en sencillo\"\n\n"
+                "📌 En tablas verás: **precio**, **status/chance**, **forma reciente**, **xGI**, y para defensivos: **CS/GC/BPS** (+ **saves** en GKP). "
+                "Si el modelo está disponible, también verás **pred_total_points_next_gw**.\n\n"
+                "¿Qué quieres hacer?"
             ),
         }
     ]
+
+
 
 chat_container = st.container()
 with chat_container:
