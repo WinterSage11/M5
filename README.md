@@ -1,4 +1,4 @@
-#LineupAI (FantasyPL)
+# LineupAI (FantasyPL)
 
 LineupAI es una aplicación web (Streamlit) que ayuda a usuarios de Fantasy Premier League (FPL) a tomar decisiones de alineación de forma rápida, clara y basada en datos oficiales. La plataforma permite realizar preguntas en lenguaje natural (por ejemplo, comparar jugadores o buscar opciones por presupuesto) y devuelve resultados estructurados en tablas, con métricas relevantes y alertas de disponibilidad.
 
